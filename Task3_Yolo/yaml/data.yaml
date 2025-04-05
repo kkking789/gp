@@ -1,0 +1,13 @@
+train: ../datasets/train/images
+val: ../datasets/valid/images
+test: ../datasets/test/images
+
+nc: 16
+names: ['Bottle', 'Bottle Lid', 'Can', 'Cardboard Box', 'Cigarette Filter', 'Eggshell', 'Leaf', 'Plastic Fork', 'Plastic Pouch', 'Plastic Spoon', 'Plastic Wrapper', 'Rubberband', 'Styrofoam Container', 'Wood Stick', 'disposable cup', 'milk carton']
+
+roboflow:
+  workspace: kuang
+  project: -loekb
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/kuang/-loekb/dataset/2

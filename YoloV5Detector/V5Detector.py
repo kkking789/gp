@@ -1,0 +1,98 @@
+import argparse
+import csv
+import os
+import platform
+import sys
+from pathlib import Path
+
+import torch
+import numpy as np
+import cv2
+
+from ultralytics.utils.plotting import Annotator, colors
+
+from models.common import DetectMultiBackend
+from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadScreenshots, LoadStreams
+from utils.general import (LOGGER, Profile, cv2, non_max_suppression, scale_boxes)
+from utils.torch_utils import select_device
+from utils.augmentations import letterbox
+
+import random
+
+class Detector:
+    def __init__(self, weights_path, data, colors=None, device='cpu'):
+        self.weights = weights_path
+        self.device = device
+        self.device = select_device(self.device)
+        model = DetectMultiBackend(weights_path, device=self.device, dnn=False, data=data, fp16=False)
+        self.m = model
+        self.names = model.module.names if hasattr(
+            model, 'module') else model.names
+        self.colors_random = [tuple((random.randint(0, 255) for _ in range(3))) for _ in self.names]
+        self.colors = colors
+        if self.colors:
+            for color in self.colors:
+                self.colors_random[color] = self.colors[color]
+
+    def preprocess(self, img, img_size):
+        img0 = img.copy()
+        img = letterbox(img, new_shape=img_size)[0]
+        img = img[:, :, ::-1].transpose(2, 0, 1)
+        img = np.ascontiguousarray(img)
+        img = torch.from_numpy(img).to(self.device)
+        img = img.float()
+        img /= 255.0
+        if img.ndimension() == 3:
+            img = img.unsqueeze(0)
+        return img0, img
+
+    def detect(self, im, cls, thresh, img_size=(640, 640)):
+
+        im0, img = self.preprocess(im, img_size)
+
+        pred = self.m(img, augment=False)[0]
+        pred = pred.float()
+        if pred.dim() == 2:
+            pred = torch.unsqueeze(pred, dim=0)
+        pred = non_max_suppression(pred, thresh, 0.7)
+        pred_boxes = []
+        for det in pred:
+            if det is not None and len(det):
+                det[:, :4] = scale_boxes(
+                    img.shape[2:], det[:, :4], im0.shape).round()
+                for *x, conf, cls_id in det:
+                    label_name = self.names[int(cls_id)]
+                    if not label_name in cls:
+                        continue
+                    x1, y1 = int(x[0].cpu().detach().numpy().tolist()), int(x[1].cpu().detach().numpy().tolist())
+                    x2, y2 = int(x[2].cpu().detach().numpy().tolist()), int(x[3].cpu().detach().numpy().tolist())
+                    cls_id = int(cls_id.cpu().detach().numpy().tolist())
+                    conf = round((conf.cpu().detach().numpy().tolist()), 4)
+                    pred_boxes.append(
+                        (x1, y1, x2, y2, cls_id, label_name, conf))
+        return im, pred_boxes
+
+    def draw_box(self, im, pred_boxes):
+        if not pred_boxes:
+            print("can not draw box cause no objects!!")
+        else:
+            for pred_box in pred_boxes:
+                annotator = Annotator(im, line_width=5, example=str(self.names))
+                annotator.box_label(pred_box, label=pred_box[5]+" "+str(pred_box[6]), color=self.colors_random[int(pred_box[4])])
+        return im
+
+    def print_result(self, pred_boxes):
+        if not pred_boxes:
+            print("can not print result cause no objects!!")
+        else:
+            for i in range(len(pred_boxes)):
+                print("{}st object is {}, class id is {}, x:{},y:{},w:{},h:{},conf:{}".format(i, pred_boxes[i][5], pred_boxes[i][4],
+                                                                                              pred_boxes[i][0], pred_boxes[i][1],
+                                                                                              (pred_boxes[i][2]-pred_boxes[i][0]),
+                                                                                              (pred_boxes[i][3]-pred_boxes[i][1]),
+                                                                                              pred_boxes[i][6]))
+
+
+
+
+
