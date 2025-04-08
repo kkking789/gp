@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+# -*- coding: UTF-8 -*-
 """
 功能：对目标点的追踪
 耦合点：

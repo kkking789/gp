@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+# -*- coding: UTF-8 -*-
 """
 功能：各类数据处理，将最终目标点存储并发送至Track
 耦合点：从Yolo中获取追踪点数据，向Track发送目标点数据

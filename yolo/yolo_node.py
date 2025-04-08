@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+# -*- coding: UTF-8 -*-
 """
 功能：图像检测
 耦合点：
