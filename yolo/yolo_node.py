@@ -9,19 +9,19 @@
 
 import torch
 import copy
-import Task3_Yolo.yolo5_detect as yolo5_detect
+import yolo.yolo5_detect as yolo5_detect
 import cv2
 import time
 import rospy
 from cv_bridge import CvBridge
 
-from share import *
 from YoloV5Detector.V5Detector import Detector
-from plumbing_pub_sub.msg import Todetect,Detected
-from sensor_msgs.msg import Imu, NavSatFix, Pose2D, Image
+from sensor.msg import Todetect
+from yolo.msg import Detected
+from sensor_msgs.msg import Imu, NavSatFix, Image
 
-weights = './Task3_Yolo/weights/best.pt'
-yaml = './Task3_Yolo/yaml/data.yaml'
+weights = './yolo/weights/best.pt'
+yaml = './yolo/yaml/data.yaml'
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 

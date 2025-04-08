@@ -14,7 +14,8 @@ import math
 import numpy as np
 import rospy
 from simple_pid import PID
-from sensor_msgs.msg import Imu, NavSatFix, Pose2D, Image
+from sensor_msgs.msg import Imu, NavSatFix, Image
+from geometry_msgs.msg import Pose2D
 from queue import Queue
 
 

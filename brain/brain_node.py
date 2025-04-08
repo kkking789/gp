@@ -11,8 +11,8 @@ from math import sqrt, cos, sin, atan
 import rospy
 import numpy as np
 from cv_bridge import CvBridge
-from plumbing_pub_sub.msg import Detected
-from sensor_msgs.msg import Imu, NavSatFix, Pose2D, Image
+from yolo.msg import Detected
+from geometry_msgs.msg import Pose2D
 import cv2
 
 blockSize = 8

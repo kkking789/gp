@@ -1,9 +1,9 @@
 import time
 
-from Task1_Track.Task1 import TrackThread
-from Task2_Sensor.Task2 import SensorThread
-from Task3_Yolo.Task3 import DetectThread
-from Task4_Brain.Task4 import BrainThread
+from track.track_node import TrackThread
+from sensor.sensor_node import SensorThread
+from yolo.yolo_node import DetectThread
+from brain.brain_node import BrainThread
 
 if __name__ == '__main__':
     task1 = TrackThread()
