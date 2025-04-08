@@ -7,79 +7,76 @@
 
 import math
 import cv2
-import copy
 import rospy
-from sensor_msgs.msg import Imu, NavSatFix
-
+from sensor_msgs.msg import Imu, NavSatFix, Pose2D, Image
+from cv_bridge import CvBridge
+from tf.transformations import euler_from_quaternion
+from plumbing_pub_sub.msg import Todetect
 from pyproj import Transformer
-from share import *
-
-gpscopy, rpy = None, None
 
 
-def wgs2utm(lat, lon):
-    transformer = Transformer.from_crs("EPSG:4326", "EPSG:32651")
-    east, north = transformer.transform(lat, lon)
-    return east, north
-
-
-def q2e(q):
-    q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
-    roll = math.atan2(2 * (q0 * q1 + q2 * q3), 1 - 2 * (q1 ** 2 + q2 ** 2))
-    pitch = math.asin(2 * (q0 * q2 - q3 * q1))
-    yaw = math.atan2(2 * (q0 * q3 + q1 * q2), 1 - 2 * (q2 ** 2 + q3 ** 2))
-    if yaw < 0:
-        yaw += 2 * math.pi
-    return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
-
-
-def imucallback(imumsg):
-    global rpy, imu
-    with imuLock:
-        imu.state = RUNNING_STATE
-        imu.orientation = copy.copy([imumsg.orientation.x, imumsg.orientation.y, imumsg.orientation.z, imumsg.orientation.w])
-        imu.angular_velocity = copy.copy([imumsg.angular_velocity.x, imumsg.angular_velocity.y, imumsg.angular_velocity.z, imumsg])
-        imu.linear_acceleration = copy.copy([imumsg.linear_acceleration.x, imumsg.linear_acceleration.y,
-                                   imumsg.linear_acceleration.z])
-        imu.rpy = q2e(imu.orientation)
-        rpy = imu.rpy
-
-
-def gpscallback(gpsmsg):
-    global gpscopy,gps
-    with gpsLock:
-        gps.state = RUNNING_STATE
-        gps.latitude = copy.copy(gpsmsg.latitude)
-        gps.longitude = copy.copy(gpsmsg.longitude)
-        gps.x, gps.y = wgs2utm(gps.latitude, gps.longitude)
-        gpscopy = gps
-
-
-def getsensor():
-    global W, H_, img
-    rospy.init_node("nanosensor")
-    imusub = rospy.Subscriber("/senor/m_imu", Imu, imucallback, queue_size=10)
-    gpsub = rospy.Subscriber("/senor/m_fix", NavSatFix, gpscallback, queue_size=10)
-
-    cap = cv2.VideoCapture(0)
-    W, H_ = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    while True:
-        ret, frame = cap.read()
-        if ret and rpy is not None and gpscopy is not None:
-            with imgLock:
-                img.state = RUNNING_STATE
-                img.img = copy.deepcopy(frame)
-                img.rpy = copy.copy(rpy)
-                img.gps = copy.copy(gpscopy)
-
-
-class SensorThread(threading.Thread):
+class SensorNode:
     def __init__(self):
-        threading.Thread.__init__(self)
-        self.daemon = True
+        rospy.init_node("nanosensor")
+        self.bridge = CvBridge()
+        self.pos = Pose2D()
+        self.rpy = [0.0, 0.0, 0.0]
+
+        # 订阅与发布
+        self.imusub = rospy.Subscriber("/imu/data_raw", Imu, self.imucallback, queue_size=10)
+        self.gpsub = rospy.Subscriber("/sensor/m_fix", NavSatFix, self.gpscallback, queue_size=10)
+        self.posepub = rospy.Publisher('/gpspose', Pose2D, queue_size=2)
+        self.todetectpub = rospy.Publisher('/todetect', Todetect, queue_size=2)
+
+        # 初始化UTM转换器（动态计算带号）
+        self.transformer = None  # 延迟初始化
+
+    def wgs2utm(self, lat, lon):
+        if self.transformer is None:
+            utm_zone = (int((lon + 180) / 6) % 60) + 1
+            epsg_code = f"EPSG:326{utm_zone:02d}"
+            self.transformer = Transformer.from_crs("EPSG:4326", epsg_code)
+        return self.transformer.transform(lat, lon)
+
+    def imucallback(self, imumsg):
+        (roll, pitch, yaw) = euler_from_quaternion([
+            imumsg.orientation.x,
+            imumsg.orientation.y,
+            imumsg.orientation.z,
+            imumsg.orientation.w
+        ])
+        self.rpy = [
+            roll,
+            pitch,
+            yaw % (2 * math.pi)  # 确保yaw在0~360度
+        ]
+
+    def gpscallback(self, gpsmsg):
+        east, north = self.wgs2utm(gpsmsg.latitude, gpsmsg.longitude)
+        self.pos.x = east
+        self.pos.y = north
+        self.pos.theta = math.radians(self.rpy[2])  # 转换为弧度
+        self.posepub.publish(self.pos)
 
     def run(self):
-        getsensor()
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            rospy.logerr("摄像头无法打开")
+            return
+        rospy.on_shutdown(lambda: cap.release())
+        rate = rospy.Rate(20)
+
+        while not rospy.is_shutdown():
+            ret, frame = cap.read()
+            if ret:
+                msg = Todetect()
+                msg.img = self.bridge.cv2_to_imgmsg(frame, "bgr8")
+                msg.pose = self.pos
+                msg.rpy = self.rpy
+                self.todetectpub.publish(msg)
+            rate.sleep()
 
 
-
+if __name__ == '__main__':
+    node = SensorNode()
+    node.run()

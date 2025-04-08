@@ -12,55 +12,72 @@ import copy
 import Task3_Yolo.yolo5_detect as yolo5_detect
 import cv2
 import time
+import rospy
+from cv_bridge import CvBridge
 
 from share import *
 from YoloV5Detector.V5Detector import Detector
+from plumbing_pub_sub.msg import Todetect,Detected
+from sensor_msgs.msg import Imu, NavSatFix, Pose2D, Image
 
 weights = './Task3_Yolo/weights/best.pt'
 yaml = './Task3_Yolo/yaml/data.yaml'
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def detecting():
-    import pathlib
-    pathlib.PosixPath = pathlib.WindowsPath
-    print(f"weights:{weights},yaml:{yaml},device:{device}")
-    global detect
-    # 网络初始化
-    det = Detector(weights, yaml, device=device)
-    yolo5_module = yolo5_detect.yolo5_arr(det, yaml=yaml)
-    pre_time = time.time()
 
-    while True:
-        fps = 1 / (time.time() - pre_time)  # 计算实时帧数
-        with imgLock:
-            if img.state == RUNNING_STATE:
-                todetect = copy.deepcopy(img.img)
-                rpy = copy.copy(img.rpy)
-                gps_ = copy.copy(img.gps)
-            pre_time = time.time()
-        # 数据预处理
-        todetect = cv2.cvtColor(todetect, cv2.COLOR_BGR2RGB)
-        todetect = cv2.convertScaleAbs(todetect, alpha=1.2, beta=0)
-        # 推理
-        dst_mat, det_res = yolo5_module.detecting(todetect, img_size=(640, 640))
-        cv2.putText(dst_mat, f"fps:{fps}", (50, 50), cv2.FONT_HERSHEY_COMPLEX, 2.0, (100, 200, 200), 2)
-        cv2.imshow("dst", dst_mat)
-        cv2.waitKey(1)
-
-        # 推理结果导出
-        with detectLock:
-            detect.state = RUNNING_STATE
-            detect.pred_boxes = det_res
-            detect.img = img
-            detect.yaw = rpy
-            detect.gps = gps_
-
-
-class DetectThread(threading.Thread):
+class YoloNode:
     def __init__(self):
-        threading.Thread.__init__(self)
-        self.daemon = True
+        self.todetectsub = rospy.Subscriber("/todetect", Todetect, self.todetectcallback, queue_size=2)
+        self.detectedpub = rospy.Publisher("/detected", Detected, queue_size=2)
+
+        # 网络初始化
+        self.det = Detector(weights, yaml, device=device)
+        self.yolo5_module = yolo5_detect.yolo5_arr(self.det, yaml=yaml)
+        self.pre_time = time.time()
+
+        self.todetect = None
+        self.imgmsg = Image()
+        self.bridge = CvBridge()
+        self.rpy = []
+        self.pos = []
+        self.lock = False
+
+    def todetectcallback(self, tdmsg):
+        if not self.lock:
+            self.imgmsg = copy.deepcopy(tdmsg.img)
+            self.todetect = self.bridge.imgmsg_to_cv2(tdmsg.img)
+            self.pos = tdmsg.pose
+            self.rpy = tdmsg.rpy
 
     def run(self):
-        detecting()
+        rate = rospy.Rate(10)
+        while not rospy.is_shutdown():
+            self.lock = True
+            if self.todetect is None:
+                rate.sleep()
+                continue
+            fps = 1 / (time.time() - pre_time)  # 计算实时帧数
+            pre_time = time.time()
+            # 数据预处理
+            todetect = cv2.cvtColor(self.todetect, cv2.COLOR_BGR2RGB)
+            todetect = cv2.convertScaleAbs(todetect, alpha=1.2, beta=0)
+            # 推理
+            dst_mat, det_res = self.yolo5_module.detecting(todetect, img_size=(640, 640))
+            # cv2.putText(dst_mat, f"fps:{fps}", (50, 50), cv2.FONT_HERSHEY_COMPLEX, 2.0, (100, 200, 200), 2)
+            # cv2.imshow("dst", dst_mat)
+            # cv2.waitKey(1)
+            detected = Detected()
+            detected.pred_boxes = det_res
+            detected.img = self.imgmsg
+            detected.pose = self.pos
+            detected.rpy = self.rpy
+
+            self.detectedpub.publish(detected)
+            self.lock = False
+
+            rate.sleep()
+
+if __name__ == '__main__':
+    node = YoloNode()
+    node.run()

@@ -11,72 +11,88 @@
 作者：kkking789
 """
 import math
-import copy
+import numpy as np
+import rospy
 from simple_pid import PID
-from share import *
+from sensor_msgs.msg import Imu, NavSatFix, Pose2D, Image
+from queue import Queue
 
 
-def tracking():
-    global npos
-    # 初始化变量
-    tracking_state = INITIAL_STATE
-    x = 0  # 船的世界坐标系x轴，东方为正方向
-    y = 0  # 船的世界坐标系y轴，北方为正方
-    yaw = 0  # 船的世界坐标系下yaw轴，单位角度
-    # 初始化pid
-    anglepid = PID(2, 0, 1, 0, output_limits=(-1, 1))
-    wpid = PID(2, 0, 1, 0, output_limits=(-0.4 / H, 0.4 / H))
-    distancepid = PID(2, 0, 1, 0, output_limits=(-0.4 / 2, 0.4 / 2))
-    while True:
-        # 各类传感器数据获取
-        with nposLock:
-            # npos状态置RUNNIG，目标位置装填---->获取目标位置，npos状态置STOP
-            # ----->完成追踪，npos的feedback置FINISH---->npos状态置RUNING，填装新的目标位置
-            if npos.state == RUNNING_STATE:
-                targetx = copy.copy(npos.targetx)
-                targety = copy.copy(npos.targety)
-                npos.state = STOP_STATE
-                tracking_state = RUNNING_STATE
-            npos.feedbackstate = tracking_state
-        with gpsLock:
-            if gps.state == RUNNING_STATE:
-                x = copy.copy(gps.x)
-                y = copy.copy(gps.y)
-        with imuLock:
-            if imu.state == RUNNING_STATE:
-                av = copy.copy(imu.angular_velocity)
-                yaw = copy.copy(imu.rpy[2])
+H = 0.02  # 左舷右舷之间的距离，单位米
+INIT = -1
+RUN = 1
+FINISH = 2
 
-        # 开始追踪点
-        if tracking_state == RUNNING_STATE:
-            # 控制船体角速度
-            anglepid.setpoint = math.atan2(targetx, targety)
-            goalw = anglepid(yaw)
-            wpid.setpoint = goalw
-            wpwm = wpid(av[2])
-            # 控制船体线速度
-            distance = math.sqrt((  - x) ** 2 + (targety - y) ** 2)
-            vpwm = distancepid(distance)
-
-            portpwm = (wpwm * H + vpwm * 2) / 2
-            stdbpwm = (vpwm * 2 - wpwm * H) / 2
-            with pwmLock:
-                pwm.portpwm = portpwm
-                pwm.stdbpwm = stdbpwm
-
-            if distance < 0.1:
-                tracking_state = FINISH_STATE
-        elif tracking_state == FINISH_STATE or tracking_state == INITIAL_STATE:
-            # 完成追踪并无新追踪点时自旋，直到找到新点
-            with pwmLock:
-                pwm.portpwm = 0.2
-                pwm.stdbpwm = -0.2
-
-
-class TrackThread(threading.Thread):
+class TrackNode:
     def __init__(self):
-        threading.Thread.__init__(self)
-        self.daemon = True
+        self.anglepid = PID(2, 0, 1, 0, output_limits=(-1, 1))
+        self.wpid = PID(2, 0, 1, 0, output_limits=(-0.4 / H, 0.4 / H))
+        self.distancepid = PID(2, 0, 1, 0, output_limits=(-0.4 / 2, 0.4 / 2))
+
+        self.posesub = rospy.Subscriber("/gpspose", Pose2D, self.posecallback, queue_size=10)
+        self.imusub = rospy.Subscriber("/imu/data_raw", Imu, self.imucallback, queue_size=10)
+        self.gpointsub = rospy.Subscriber("/goalpoint", Pose2D, self.gpointcallback,queue_size=2)
+        self.portpub = rospy.Publisher("/gnc/port_cmd", float, queue_size=2)
+        self.stdbpub = rospy.Publisher("/gnc/stdb_cmd", float, queue_size=2)
+
+        self.rpy = []
+        self.pose = []
+        self.av = []
+        self.gpoint = Queue(maxsize=5)
+        self.targetx = 0
+        self.targety = 0
+
+        self.state = INIT
+
+    def posecallback(self, posemsg):
+        self.pose = [posemsg.x, posemsg.y, posemsg.theta]
+
+    def imucallback(self, imumsg):
+        self.av = imumsg.angular_velocity
+
+    def gpointcallback(self, gpointmsg):
+        self.gpoint.put((gpointmsg.x, gpointmsg.y))
 
     def run(self):
-        tracking()
+        rate = rospy.Rate(20)
+        while not rospy.is_shutdown():
+            if not self.pose or not self.av:
+                rate.sleep()
+                continue
+            if self.state == INIT or self.state == FINISH:
+                if len(self.gpoint) > 0:
+                    goal = self.gpoint.get()
+                    if goal[0] > 0 and goal[1] > 0:
+                        self.targetx = goal[0]
+                        self.targety = goal[1]
+                        self.state = RUN
+            if self.state == RUN:
+                # 控制船体角速度
+                self.anglepid.setpoint = math.atan2(self.targetx, self.targety)
+                goalw = self.anglepid(self.pose[2])
+                self.wpid.setpoint = goalw
+                wpwm = self.wpid(self.av[2])
+                # 控制船体线速度
+                distance = math.sqrt((self.targetx - self.pose[0]) ** 2 + (self.targety - self.pose[1]) ** 2)
+                vpwm = self.distancepid(distance)
+
+                portpwm = (wpwm * H + vpwm * 2) / 2
+                stdbpwm = (vpwm * 2 - wpwm * H) / 2
+                portpwm = np.clip(portpwm, -1.0, 1.0)
+                stdbpwm = np.clip(stdbpwm, -1.0, 1.0)
+
+                if distance < 0.1:
+                    self.state = FINISH
+
+            else:
+                portpwm = 0.2
+                stdbpwm = -0.2
+
+            self.portpub.publish(portpwm)
+            self.stdbpub.publish(stdbpwm)
+            rate.sleep()
+
+
+if __name__ == '__main__':
+    node = TrackNode()
+    node.run()
